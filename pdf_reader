@@ -1,0 +1,92 @@
+import streamlit as st
+from PyPDF2 import PdfReader
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.vectorstores import FAISS
+from langchain.chains.question_answering import load_qa_chain
+from langchain.llms import OpenAI
+import os
+
+# Set OpenAI API key
+os.environ["openai_api_key"] = ""
+
+# Directories for uploads and FAISS indices
+UPLOAD_DIR = r"C:\Users\Dell\Documents\vocso_python\haystack_rag\uploaded_files"
+INDEX_DIR = r"C:\Users\Dell\Documents\vocso_python\haystack_rag\faiss_indices"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(INDEX_DIR, exist_ok=True)
+
+# Streamlit UI
+def main():
+    st.title("Documents Chatbot with Saved FAISS Indices")
+    st.write("Upload documents, create FAISS indices, and ask questions based on the saved embeddings.")
+
+    # Sidebar for file uploads
+    uploaded_files = st.sidebar.file_uploader("Upload files", type=["pdf", "txt"], accept_multiple_files=True)
+
+    # Process uploaded files and save FAISS index
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            st.sidebar.write(f"Uploaded: {uploaded_file.name}")
+
+            # Extract text from the file
+            raw_text = ''
+            if uploaded_file.name.endswith(".pdf"):
+                pdf_reader = PdfReader(file_path)
+                for page in pdf_reader.pages:
+                    content = page.extract_text()
+                    if content:
+                        raw_text += content
+            elif uploaded_file.name.endswith(".txt"):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    raw_text = f.read()
+
+            # Split text into chunks
+            text_splitter = CharacterTextSplitter(
+                separator="\n",
+                chunk_size=800,
+                chunk_overlap=200,
+                length_function=len,
+            )
+            texts = text_splitter.split_text(raw_text)
+
+            # Create embeddings and FAISS index
+            embedding = OpenAIEmbeddings()
+            document_search = FAISS.from_texts(texts, embedding)
+
+            # Save the FAISS index
+            index_file_path = os.path.join(INDEX_DIR, f"{uploaded_file.name}.index")
+            document_search.save_local(index_file_path)
+            st.sidebar.success(f"FAISS index saved as: {uploaded_file.name}.index")
+
+    # Select and load FAISS index for querying
+    st.sidebar.write("### Choose a FAISS index to query")
+    try:
+        index_files = [f for f in os.listdir(INDEX_DIR) if f.endswith(".index")]
+        if index_files:
+            selected_index = st.sidebar.selectbox("Select an index", options=index_files)
+            if selected_index:
+                index_file_path = os.path.join(INDEX_DIR, selected_index)
+                document_search = FAISS.load_local(index_file_path, OpenAIEmbeddings(), allow_dangerous_deserialization=True)
+
+                st.success(f"FAISS index '{selected_index}' loaded successfully!")
+
+                # Chatbot interaction
+                st.write("### Ask a question based on the selected index")
+                query = st.text_input("Enter your question:")
+
+                if query:
+                    chain = load_qa_chain(OpenAI(), chain_type="stuff")
+                    docs = document_search.similarity_search(query)
+                    answer = chain.run(input_documents=docs, question=query)
+                    st.write("**Answer:**", answer)
+        else:
+            st.sidebar.write("No FAISS index files found.")
+    except Exception as e:
+        st.sidebar.error(f"Error loading FAISS index: {e}")
+
+if __name__ == "__main__":
+    main()
